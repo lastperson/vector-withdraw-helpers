@@ -27,6 +27,7 @@ contract UniswapWithdrawHelper is WithdrawHelper {
     address[] path;
     address to;
     address router;
+    address withdrawFallback;
   }
 
   function getCallData(
@@ -35,51 +36,60 @@ contract UniswapWithdrawHelper is WithdrawHelper {
     return abi.encode(swapData);
   }
 
+  // Does not support safe ETH withdrawals. ETH should be sent here, and then into the Router, not directly from the channel to router.
   function execute(WithdrawData calldata wd, uint256 actualAmount) override external {
     SwapData memory swapData = abi.decode(wd.callData, (SwapData));
 
     require(swapData.amountIn <= actualAmount, "UniswapWithdrawHelper: amountIn is not <= actualAmount");
     require(swapData.tokenA != swapData.tokenB, "UniswapWithdrawHelper: tokens cannot be the same");
 
-    if (swapData.tokenA != address(0)) {
-      require(IERC20(swapData.tokenA).approve(swapData.router, swapData.amountIn), "UniswapWithdrawHelper: tokenA approve failed.");
-    }
+    // This is just to illustrate the idea, DO NOT MERGE.
+    try {
+      if (swapData.tokenA != address(0)) {
+        require(IERC20(swapData.tokenA).approve(swapData.router, swapData.amountIn), "UniswapWithdrawHelper: tokenA approve failed.");
+      }
 
-    uint[] memory amounts;
-    if (swapData.tokenA == address(0)) {
-      amounts = IUniswapV2Router02(swapData.router).swapExactETHForTokens(
+      uint[] memory amounts;
+      if (swapData.tokenA == address(0)) {
+        amounts = IUniswapV2Router02(swapData.router).swapExactETHForTokens(
+          swapData.amountOutMin, 
+          swapData.path, 
+          swapData.to, 
+          block.timestamp
+        );
+      } else if (swapData.tokenB == address(0)) {
+        amounts = IUniswapV2Router02(swapData.router).swapExactTokensForETH(
+          swapData.amountIn,
+          swapData.amountOutMin, 
+          swapData.path, 
+          swapData.to, 
+          block.timestamp
+        );
+      } else {
+        amounts = IUniswapV2Router02(swapData.router).swapExactTokensForTokens(
+          swapData.amountIn,
+          swapData.amountOutMin, 
+          swapData.path, 
+          swapData.to, 
+          block.timestamp
+        );
+      }
+      emit Swap(
+        swapData.tokenA, 
+        swapData.tokenB, 
+        swapData.amountIn, 
         swapData.amountOutMin, 
-        swapData.path, 
         swapData.to, 
-        block.timestamp
+        swapData.router, 
+        amounts
       );
-    } else if (swapData.tokenB == address(0)) {
-      amounts = IUniswapV2Router02(swapData.router).swapExactTokensForETH(
-        swapData.amountIn,
-        swapData.amountOutMin, 
-        swapData.path, 
-        swapData.to, 
-        block.timestamp
-      );
-    } else {
-      amounts = IUniswapV2Router02(swapData.router).swapExactTokensForTokens(
-        swapData.amountIn,
-        swapData.amountOutMin, 
-        swapData.path, 
-        swapData.to, 
-        block.timestamp
-      );
+    } catch(bytes memory err) {
+      if (swapData.tokenA != address(0)) {
+        swapData.withdrawFallback.transfer(swapData.amountIn);
+      } else {
+        SafeERC20.transfer(swapData.tokenA, swapData.withdrawFallback, swapData.amountIn);
+      }
     }
-
-    emit Swap(
-      swapData.tokenA, 
-      swapData.tokenB, 
-      swapData.amountIn, 
-      swapData.amountOutMin, 
-      swapData.to, 
-      swapData.router, 
-      amounts
-    );
   }
 }
 
